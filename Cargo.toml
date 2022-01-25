@@ -1,5 +1,6 @@
 [package]
 name = "ratchet-x2"
+license = "MIT"
 version = "0.1.0"
 edition = "2021"
 authors = ["Oleksandr Yermakov <olexander.yermakov@gmail.com>"]
