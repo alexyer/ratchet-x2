@@ -9,7 +9,7 @@ use core::marker::PhantomData;
 
 use cryptraits::{
     aead::Aead,
-    convert::ToVec,
+    convert::{Len, ToVec},
     hmac::Hmac,
     kdf::Kdf,
     key::{KeyPair, PublicKey, SecretKey},
@@ -72,8 +72,6 @@ pub struct Header<PK: PublicKey> {
 }
 
 impl<PK: PublicKey + ToVec> ToVec for Header<PK> {
-    const LEN: usize = PK::LEN + 8;
-
     fn to_vec(&self) -> Vec<u8>
     where
         Self: Sized,
@@ -84,6 +82,10 @@ impl<PK: PublicKey + ToVec> ToVec for Header<PK> {
         v.extend_from_slice(&self.n.to_be_bytes());
         v
     }
+}
+
+impl<PK: PublicKey + Len> Len for Header<PK> {
+    const LEN: usize = PK::LEN + 8;
 }
 
 impl<K, KDF, AEAD, HMAC> DoubleRatchet<K, KDF, AEAD, HMAC>
