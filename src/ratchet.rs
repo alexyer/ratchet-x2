@@ -65,7 +65,7 @@ where
 }
 
 /// Double Ratchet message header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Header<PK: PublicKey> {
     /// DH Ratchet key (the "sending" or "self" ratchet key)
     dhs: PK,
