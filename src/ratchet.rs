@@ -64,11 +64,31 @@ where
     _hmac: PhantomData<HMAC>,
 }
 
+/// Double Ratchet message header.
 #[derive(Debug, PartialEq)]
 pub struct Header<PK: PublicKey> {
+    /// DH Ratchet key (the "sending" or "self" ratchet key)
     dhs: PK,
+
+    /// Number of messages in previous sending chain
     pn: u32,
+
+    /// Message number
     n: u32,
+}
+
+impl<PK: PublicKey> Header<PK> {
+    pub fn dhs(&self) -> &PK {
+        &self.dhs
+    }
+
+    pub fn pn(&self) -> u32 {
+        self.pn
+    }
+
+    pub fn n(&self) -> u32 {
+        self.pn
+    }
 }
 
 impl<PK: PublicKey + ToVec> ToVec for Header<PK> {
