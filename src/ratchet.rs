@@ -12,7 +12,7 @@ use cryptraits::{
     convert::{Len, ToVec},
     hmac::Hmac,
     kdf::Kdf,
-    key::{KeyPair, PublicKey, SecretKey},
+    key::{Generate, KeyPair, PublicKey, SecretKey},
     key_exchange::DiffieHellman,
 };
 use rand_core::{CryptoRng, RngCore};
@@ -110,7 +110,7 @@ impl<PK: PublicKey + Len> Len for Header<PK> {
 
 impl<K, KDF, AEAD, HMAC> DoubleRatchet<K, KDF, AEAD, HMAC>
 where
-    K: KeyPair + DiffieHellman,
+    K: KeyPair + DiffieHellman + Generate,
     KDF: Kdf,
     AEAD: Aead,
     HMAC: Hmac,

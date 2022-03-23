@@ -1,3 +1,6 @@
+[![TestStatus](https://github.com/alexyer/ratchet-x2/actions/workflows/rust_test.yml/badge.svg?event=push)](https://github.com/alexyer/ratchet-x2/actions)
+[![Crate](https://img.shields.io/crates/v/ratchet-x2.svg)](https://crates.io/crates/ratchet-x2)
+[![API](https://docs.rs/ratchet-x2/badge.svg)](https://docs.rs/ratchet-x2)
 # RATCHET-X2
 Pure Rust Double Ratchet protocol implementation
 
