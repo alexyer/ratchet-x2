@@ -3,9 +3,13 @@ use std::{collections::BTreeMap, marker::PhantomData};
 
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
+use cryptimitives::key::x25519_ristretto;
 
 #[cfg(not(feature = "std"))]
 use core::marker::PhantomData;
+
+#[cfg(feature = "serde_derive")]
+use serde::{Deserialize, Serialize};
 
 use cryptraits::{
     aead::Aead,
@@ -23,6 +27,16 @@ pub type Secret = [u8; 32];
 
 pub const MAX_SKIP: u32 = 2000;
 
+#[cfg(not(feature = "serde_derive"))]
+trait DrPkToVec: ToVec {}
+
+#[cfg(feature = "serde_derive")]
+pub trait DrPkToVec: ToVec + Serialize + for<'a> Deserialize<'a> {}
+
+#[cfg(feature = "serde_derive")]
+impl DrPkToVec for x25519_ristretto::PublicKey {}
+
+#[cfg(not(feature = "serde_derive"))]
 pub struct DoubleRatchet<K, KDF, AEAD, HMAC>
 where
     K: KeyPair + DiffieHellman,
@@ -30,7 +44,7 @@ where
     AEAD: Aead,
     HMAC: Hmac,
     <K as DiffieHellman>::SSK: ToVec,
-    <K as DiffieHellman>::PK: ToVec,
+    <K as DiffieHellman>::PK: DrPkToVec,
 {
     /// DH Ratchet key pair (the "sending" or "self" ratchet key)
     dhs: K,
@@ -64,8 +78,57 @@ where
     _hmac: PhantomData<HMAC>,
 }
 
+#[cfg(feature = "serde_derive")]
+#[derive(Serialize, Deserialize)]
+pub struct DoubleRatchet<K, KDF, AEAD, HMAC>
+where
+    K: KeyPair + DiffieHellman,
+    KDF: Kdf,
+    AEAD: Aead,
+    HMAC: Hmac,
+    <K as DiffieHellman>::SSK: ToVec,
+    <K as DiffieHellman>::PK: DrPkToVec,
+{
+    /// DH Ratchet key pair (the "sending" or "self" ratchet key)
+    dhs: K,
+
+    /// DH Ratchet public key (the "received" or "remote" key)
+    dhr: Option<K::PK>,
+
+    /// 32-byte Root Key
+    rk: Secret,
+
+    /// 32-byte Chain Key for sending
+    cks: Option<Secret>,
+
+    /// 32-byte Chain Key for receiving
+    ckr: Option<Secret>,
+
+    /// Message number for sending
+    ns: u32,
+
+    /// Message number for receiving
+    nr: u32,
+
+    /// Number of messages in previous sending chain
+    pn: u32,
+
+    /// Dictionary of skipped-over message keys, indexed by ratchet public key and message number.
+    mkskipped: BTreeMap<(Vec<u8>, u32), Secret>,
+
+    #[serde(skip_serializing, skip_deserializing)]
+    _kdf: PhantomData<KDF>,
+
+    #[serde(skip_serializing, skip_deserializing)]
+    _aead: PhantomData<AEAD>,
+
+    #[serde(skip_serializing, skip_deserializing)]
+    _hmac: PhantomData<HMAC>,
+}
+
 /// Double Ratchet message header.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde_derive", derive(Serialize, Deserialize))]
 pub struct Header<PK: PublicKey> {
     /// DH Ratchet key (the "sending" or "self" ratchet key)
     dhs: PK,
@@ -108,14 +171,14 @@ impl<PK: PublicKey + Len> Len for Header<PK> {
     const LEN: usize = PK::LEN + 8;
 }
 
-impl<K, KDF, AEAD, HMAC> DoubleRatchet<K, KDF, AEAD, HMAC>
+impl<'a, K, KDF, AEAD, HMAC> DoubleRatchet<K, KDF, AEAD, HMAC>
 where
     K: KeyPair + DiffieHellman + Generate,
     KDF: Kdf,
     AEAD: Aead,
     HMAC: Hmac,
     <K as DiffieHellman>::SSK: ToVec,
-    <K as DiffieHellman>::PK: ToVec,
+    <K as DiffieHellman>::PK: DrPkToVec,
 {
     /// Initialize "Alice": the sender of the first message.
     pub fn init_alice<R>(
@@ -459,6 +522,39 @@ mod tests {
         assert_eq!(
             alice.decrypt(&h_b_0, &ct_b_0, ad_b, &mut OsRng),
             Vec::from(&pt_b_0[..])
+        );
+    }
+
+    #[cfg(feature = "serde_derive")]
+    #[test]
+    fn test_asymmetric_serde() {
+        let (bob_serialized, header_a, ciphertext_a, ad_a, pt_a) = {
+            let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+
+            let (pt_a, ad_a) = (b"Hey, Bob", b"A2B");
+            let (pt_b, ad_b) = (b"Hey, Alice", b"B2A");
+
+            let (header_a, ciphertext_a) = alice.encrypt(pt_a, ad_a, &mut OsRng);
+
+            assert_eq!(
+                bob.try_encrypt(pt_b, ad_b, &mut OsRng),
+                Err(DoubleRatchetError::NotInitialized)
+            );
+
+            (
+                serde_json::to_string(&bob).unwrap(),
+                header_a,
+                ciphertext_a,
+                ad_a,
+                pt_a,
+            )
+        };
+
+        let mut bob: DR = serde_json::from_str(&bob_serialized).unwrap();
+
+        assert_eq!(
+            bob.decrypt(&header_a, &ciphertext_a, ad_a, &mut OsRng),
+            Vec::from(&pt_a[..])
         );
     }
 }

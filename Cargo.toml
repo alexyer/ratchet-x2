@@ -1,7 +1,7 @@
 [package]
 name = "ratchet-x2"
 license = "MIT"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Oleksandr Yermakov <olexander.yermakov@gmail.com>"]
 categories = ["cryptography"]
@@ -15,7 +15,10 @@ repository = "https://github.com/alexyer/ratchet-x2"
 cryptimitives = { version = "0.17.0", features = [], optional = true }
 cryptraits = { version = "0.13.0", features = [] }
 rand_core = { version = "0.6.3", features = [] }
+serde = { version = "1.0.152", features = ["derive"], optional = true }
+serde_json = { version = "1.0.93", optional = true}
 
 [features]
-default = ["std", "cryptimitives"]
+default = ["std", "cryptimitives", "serde_derive"]
 std = ["cryptimitives/std", "cryptraits/std", "rand_core/std"]
+serde_derive = ["serde", "serde_json", "cryptimitives/serde_derive"]
