@@ -150,7 +150,7 @@ impl<PK: PublicKey> Header<PK> {
     }
 
     pub fn n(&self) -> u32 {
-        self.pn
+        self.n
     }
 }
 
