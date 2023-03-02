@@ -114,7 +114,7 @@ where
     pn: u32,
 
     /// Dictionary of skipped-over message keys, indexed by ratchet public key and message number.
-    mkskipped: BTreeMap<(Vec<u8>, u32), Secret>,
+    mkskipped: BTreeMap<String, Secret>,
 
     #[serde(skip_serializing, skip_deserializing)]
     _kdf: PhantomData<KDF>,
@@ -344,7 +344,11 @@ where
         let mut nonce = vec![0u8; 8];
         nonce.extend_from_slice(&header.n.to_be_bytes());
 
-        if let Some(mk) = self.mkskipped.remove(&(header.dhs.to_vec(), header.n)) {
+        if let Some(mk) = self.mkskipped.remove(&format!(
+            "{}/{}",
+            hex::encode(header.dhs.to_vec()),
+            header.n
+        )) {
             return AEAD::new(&mk)
                 .decrypt(&nonce, ciphertext, Some(aad))
                 .or(Err(DoubleRatchetError::AeadError));
@@ -406,8 +410,10 @@ where
             while self.nr < until {
                 let (ckr, mk) = Self::kdf_ck(&ckr).unwrap();
                 self.ckr = Some(ckr);
-                self.mkskipped
-                    .insert((self.dhr.unwrap().to_vec(), self.nr), mk);
+                self.mkskipped.insert(
+                    format!("{}/{}", hex::encode(self.dhr.unwrap().to_vec()), self.nr),
+                    mk,
+                );
                 self.nr += 1;
             }
         }
@@ -555,6 +561,71 @@ mod tests {
         assert_eq!(
             bob.decrypt(&header_a, &ciphertext_a, ad_a, &mut OsRng),
             Vec::from(&pt_a[..])
+        );
+    }
+
+    #[cfg(feature = "serde_derive")]
+    #[test]
+    fn test_out_of_order_serde() {
+        let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+
+        let (ad_a, ad_b) = (b"A2B", b"B2A");
+        let pt_a_0 = b"Good day Robert";
+
+        let (h_a_0, ct_a_0) = alice.encrypt(pt_a_0, ad_a, &mut OsRng);
+
+        assert_eq!(
+            bob.decrypt(&h_a_0, &ct_a_0, ad_a, &mut OsRng),
+            Vec::from(&pt_a_0[..])
+        );
+
+        let pt_a_1 = b"Do you like Rust?";
+        let (h_a_1, ct_a_1) = alice.encrypt(pt_a_1, ad_a, &mut OsRng);
+
+        // Bob misses pt_a_1
+
+        let pt_b_0 = b"Salutations Allison";
+        let (h_b_0, ct_b_0) = bob.encrypt(pt_b_0, ad_b, &mut OsRng);
+
+        // Alice misses pt_b_0
+        let pt_b_1 = b"How is your day going?";
+        let (h_b_1, ct_b_1) = bob.encrypt(pt_b_1, ad_b, &mut OsRng);
+
+        assert_eq!(
+            alice.decrypt(&h_b_1, &ct_b_1, ad_b, &mut OsRng),
+            Vec::from(&pt_b_1[..])
+        );
+
+        let pt_a_2 = b"My day is fine.";
+        let (h_a_2, ct_a_2) = alice.encrypt(pt_a_2, ad_a, &mut OsRng);
+
+        assert_eq!(
+            bob.decrypt(&h_a_2, &ct_a_2, ad_a, &mut OsRng),
+            Vec::from(&pt_a_2[..])
+        );
+
+        let bob_serialized = serde_json::to_string(&bob).unwrap();
+
+        let mut bob: DR = serde_json::from_str(&bob_serialized).unwrap();
+
+        // now Bob receives pt_a_1
+        assert_eq!(
+            bob.decrypt(&h_a_1, &ct_a_1, ad_a, &mut OsRng),
+            Vec::from(&pt_a_1[..])
+        );
+
+        let pt_b_2 = b"Yes, I like Rust";
+        let (h_b_2, ct_b_2) = bob.encrypt(pt_b_2, ad_b, &mut OsRng);
+
+        assert_eq!(
+            alice.decrypt(&h_b_2, &ct_b_2, ad_b, &mut OsRng),
+            Vec::from(&pt_b_2[..])
+        );
+
+        // now Alice receives pt_b_0
+        assert_eq!(
+            alice.decrypt(&h_b_0, &ct_b_0, ad_b, &mut OsRng),
+            Vec::from(&pt_b_0[..])
         );
     }
 }
