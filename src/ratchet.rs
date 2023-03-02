@@ -406,8 +406,8 @@ where
             return Err(DoubleRatchetError::TooManySkippedKeys);
         }
 
-        if let Some(ckr) = self.ckr {
-            while self.nr < until {
+        while self.nr < until {
+            if let Some(ckr) = self.ckr {
                 let (ckr, mk) = Self::kdf_ck(&ckr).unwrap();
                 self.ckr = Some(ckr);
                 self.mkskipped.insert(
@@ -417,7 +417,6 @@ where
                 self.nr += 1;
             }
         }
-
         Ok(())
     }
 }
@@ -505,9 +504,41 @@ mod tests {
         let pt_a_2 = b"My day is fine.";
         let (h_a_2, ct_a_2) = alice.encrypt(pt_a_2, ad_a, &mut OsRng);
 
+        let pt_a_3 = b"My day is not that fine...";
+        let (h_a_3, ct_a_3) = alice.encrypt(pt_a_3, ad_a, &mut OsRng);
+
+        let pt_a_4 = b"Its rainy";
+        let (h_a_4, ct_a_4) = alice.encrypt(pt_a_4, ad_a, &mut OsRng);
+
+        let pt_a_5 = b"And windy";
+        let (h_a_5, ct_a_5) = alice.encrypt(pt_a_5, ad_a, &mut OsRng);
+
+        let pt_a_6 = b"And muddy";
+        let (h_a_6, ct_a_6) = alice.encrypt(pt_a_6, ad_a, &mut OsRng);
+
+        assert_eq!(
+            bob.decrypt(&h_a_6, &ct_a_6, ad_a, &mut OsRng),
+            Vec::from(&pt_a_6[..])
+        );
+
+        assert_eq!(
+            bob.decrypt(&h_a_5, &ct_a_5, ad_a, &mut OsRng),
+            Vec::from(&pt_a_5[..])
+        );
+
+        assert_eq!(
+            bob.decrypt(&h_a_4, &ct_a_4, ad_a, &mut OsRng),
+            Vec::from(&pt_a_4[..])
+        );
+
         assert_eq!(
             bob.decrypt(&h_a_2, &ct_a_2, ad_a, &mut OsRng),
             Vec::from(&pt_a_2[..])
+        );
+
+        assert_eq!(
+            bob.decrypt(&h_a_3, &ct_a_3, ad_a, &mut OsRng),
+            Vec::from(&pt_a_3[..])
         );
 
         // now Bob receives pt_a_1
