@@ -1,5 +1,6 @@
+use std::collections::VecDeque;
 #[cfg(feature = "std")]
-use std::{collections::BTreeMap, marker::PhantomData};
+use std::marker::PhantomData;
 
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
@@ -25,7 +26,19 @@ use crate::errors::{DoubleRatchetError, DoubleRatchetResult};
 
 pub type Secret = [u8; 32];
 
-pub const MAX_SKIP: u32 = 2000;
+pub const DEFAULT_MAX_SKIP: usize = 2000;
+
+pub struct DoubleRatchetOptions {
+    pub max_skip: usize,
+}
+
+impl Default for DoubleRatchetOptions {
+    fn default() -> Self {
+        Self {
+            max_skip: DEFAULT_MAX_SKIP,
+        }
+    }
+}
 
 #[cfg(not(feature = "serde_derive"))]
 trait DrPkToVec: ToVec {}
@@ -71,7 +84,10 @@ where
     pn: u32,
 
     /// Dictionary of skipped-over message keys, indexed by ratchet public key and message number.
-    mkskipped: BTreeMap<(Vec<u8>, u32), Secret>,
+    mkskipped: VecDeque<(Vec<u8>, u32, Secret)>,
+
+    /// Max number of skipped-over message keys in storage.
+    max_skipped: usize,
 
     _kdf: PhantomData<KDF>,
     _aead: PhantomData<AEAD>,
@@ -114,7 +130,10 @@ where
     pn: u32,
 
     /// Dictionary of skipped-over message keys, indexed by ratchet public key and message number.
-    mkskipped: BTreeMap<String, Secret>,
+    mkskipped: VecDeque<(Vec<u8>, u32, Secret)>,
+
+    /// Max number of skipped-over message keys in storage.
+    max_skipped: usize,
 
     #[serde(skip_serializing, skip_deserializing)]
     _kdf: PhantomData<KDF>,
@@ -191,6 +210,41 @@ where
         R: CryptoRng + RngCore,
         K::SSK: ToVec,
     {
+        Self::do_init_alice(
+            ssk,
+            bob_dh_pk,
+            ckr,
+            &DoubleRatchetOptions::default(),
+            csprng,
+        )
+    }
+
+    /// Initialize "Alice": the sender of the first message, with custom options.
+    pub fn init_alice_with_options<R>(
+        ssk: &impl ToVec,
+        bob_dh_pk: K::PK,
+        ckr: Option<Secret>,
+        opts: &DoubleRatchetOptions,
+        csprng: &mut R,
+    ) -> DoubleRatchet<K, KDF, AEAD, HMAC>
+    where
+        R: CryptoRng + RngCore,
+        K::SSK: ToVec,
+    {
+        Self::do_init_alice(ssk, bob_dh_pk, ckr, opts, csprng)
+    }
+
+    pub fn do_init_alice<R>(
+        ssk: &impl ToVec,
+        bob_dh_pk: K::PK,
+        ckr: Option<Secret>,
+        opts: &DoubleRatchetOptions,
+        csprng: &mut R,
+    ) -> DoubleRatchet<K, KDF, AEAD, HMAC>
+    where
+        R: CryptoRng + RngCore,
+        K::SSK: ToVec,
+    {
         let dhs = K::generate_with(csprng);
         let (rk, cks) = Self::kdf_rk(
             Some(&ssk.to_vec()),
@@ -208,14 +262,35 @@ where
             ns: 0,
             nr: 0,
             pn: 0,
-            mkskipped: BTreeMap::new(),
+            mkskipped: Default::default(),
+            max_skipped: opts.max_skip,
             _kdf: PhantomData::default(),
             _aead: PhantomData::default(),
             _hmac: PhantomData::default(),
         }
     }
 
+    /// Initialize "Bob": the receiver of the first message.
     pub fn init_bob(rk: &impl ToVec, dhs: K, cks: Option<Secret>) -> Self {
+        Self::do_init_bob(rk, dhs, cks, &DoubleRatchetOptions::default())
+    }
+
+    /// Initialize "Bob": the receiver of the first message, with custom options.
+    pub fn init_bob_with_options(
+        rk: &impl ToVec,
+        dhs: K,
+        cks: Option<Secret>,
+        opts: &DoubleRatchetOptions,
+    ) -> Self {
+        Self::do_init_bob(rk, dhs, cks, opts)
+    }
+
+    pub fn do_init_bob(
+        rk: &impl ToVec,
+        dhs: K,
+        cks: Option<Secret>,
+        opts: &DoubleRatchetOptions,
+    ) -> Self {
         Self {
             dhs,
             dhr: None,
@@ -225,7 +300,8 @@ where
             ns: 0,
             nr: 0,
             pn: 0,
-            mkskipped: BTreeMap::new(),
+            mkskipped: Default::default(),
+            max_skipped: opts.max_skip,
             _kdf: PhantomData::default(),
             _aead: PhantomData::default(),
             _hmac: PhantomData::default(),
@@ -344,11 +420,7 @@ where
         let mut nonce = vec![0u8; 8];
         nonce.extend_from_slice(&header.n.to_be_bytes());
 
-        if let Some(mk) = self.mkskipped.remove(&format!(
-            "{}/{}",
-            hex::encode(header.dhs.to_vec()),
-            header.n
-        )) {
+        if let Some(mk) = self.get_skipped_message_key(header.dhs, header.n) {
             return AEAD::new(&mk)
                 .decrypt(&nonce, ciphertext, Some(aad))
                 .or(Err(DoubleRatchetError::AeadError));
@@ -402,22 +474,30 @@ where
     }
 
     fn skip_message_keys(&mut self, until: u32) -> DoubleRatchetResult<()> {
-        if self.nr + MAX_SKIP < until {
-            return Err(DoubleRatchetError::TooManySkippedKeys);
-        }
-
         while self.nr < until {
+            if self.mkskipped.len() >= self.max_skipped {
+                self.mkskipped.pop_front();
+            }
+
             if let Some(ckr) = self.ckr {
                 let (ckr, mk) = Self::kdf_ck(&ckr).unwrap();
                 self.ckr = Some(ckr);
-                self.mkskipped.insert(
-                    format!("{}/{}", hex::encode(self.dhr.unwrap().to_vec()), self.nr),
-                    mk,
-                );
+                self.mkskipped
+                    .push_back((self.dhr.unwrap().to_vec(), self.nr, mk));
                 self.nr += 1;
             }
         }
         Ok(())
+    }
+
+    fn get_skipped_message_key(&mut self, ratchet_key: impl ToVec, n: u32) -> Option<[u8; 32]> {
+        let pk = ratchet_key.to_vec();
+
+        self.mkskipped
+            .iter()
+            .position(|(skipped_pk, skipped_n, _)| skipped_pk == &pk && *skipped_n == n)
+            .and_then(|index| self.mkskipped.remove(index))
+            .map(|(_, _, mk)| mk)
     }
 }
 
@@ -435,7 +515,7 @@ mod tests {
         hmac::sha256::Hmac,
     >;
 
-    fn asymmetric_setup<R>(csprng: &mut R) -> (DR, DR)
+    fn asymmetric_setup<R>(opts: Option<DoubleRatchetOptions>, csprng: &mut R) -> (DR, DR)
     where
         R: CryptoRng + RngCore,
     {
@@ -444,15 +524,17 @@ mod tests {
 
         let ssk = alice_pair.diffie_hellman(bob_pair.public());
 
-        let alice = DR::init_alice(&ssk, bob_pair.to_public(), None, csprng);
-        let bob = DR::init_bob(&ssk, bob_pair, None);
+        let opts = opts.unwrap_or_default();
+
+        let alice = DR::init_alice_with_options(&ssk, bob_pair.to_public(), None, &opts, csprng);
+        let bob = DR::init_bob_with_options(&ssk, bob_pair, None, &opts);
 
         (alice, bob)
     }
 
     #[test]
     fn test_asymmetric() {
-        let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+        let (mut alice, mut bob) = asymmetric_setup(None, &mut OsRng);
 
         let (pt_a, ad_a) = (b"Hey, Bob", b"A2B");
         let (pt_b, ad_b) = (b"Hey, Alice", b"B2A");
@@ -472,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_out_of_order() {
-        let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+        let (mut alice, mut bob) = asymmetric_setup(None, &mut OsRng);
 
         let (ad_a, ad_b) = (b"A2B", b"B2A");
         let pt_a_0 = b"Good day Robert";
@@ -566,7 +648,7 @@ mod tests {
     #[test]
     fn test_asymmetric_serde() {
         let (bob_serialized, header_a, ciphertext_a, ad_a, pt_a) = {
-            let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+            let (mut alice, mut bob) = asymmetric_setup(None, &mut OsRng);
 
             let (pt_a, ad_a) = (b"Hey, Bob", b"A2B");
             let (pt_b, ad_b) = (b"Hey, Alice", b"B2A");
@@ -598,7 +680,7 @@ mod tests {
     #[cfg(feature = "serde_derive")]
     #[test]
     fn test_out_of_order_serde() {
-        let (mut alice, mut bob) = asymmetric_setup(&mut OsRng);
+        let (mut alice, mut bob) = asymmetric_setup(None, &mut OsRng);
 
         let (ad_a, ad_b) = (b"A2B", b"B2A");
         let pt_a_0 = b"Good day Robert";
@@ -657,6 +739,25 @@ mod tests {
         assert_eq!(
             alice.decrypt(&h_b_0, &ct_b_0, ad_b, &mut OsRng),
             Vec::from(&pt_b_0[..])
+        );
+    }
+
+    #[test]
+    fn test_max_keys() {
+        let (mut alice, mut bob) =
+            asymmetric_setup(Some(DoubleRatchetOptions { max_skip: 5 }), &mut OsRng);
+
+        let (pt_a, ad_a) = (b"Hey, Bob", b"A2B");
+
+        let (mut header_a, mut ciphertext_a) = alice.encrypt(pt_a, ad_a, &mut OsRng);
+
+        for _ in 0..=DEFAULT_MAX_SKIP {
+            (header_a, ciphertext_a) = alice.encrypt(pt_a, ad_a, &mut OsRng);
+        }
+
+        assert_eq!(
+            bob.decrypt(&header_a, &ciphertext_a, ad_a, &mut OsRng),
+            Vec::from(&pt_a[..])
         );
     }
 }
